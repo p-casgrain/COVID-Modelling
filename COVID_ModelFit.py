@@ -149,30 +149,30 @@ if __name__ == '__main__':
     ctry_init_param_dct = {}
     ctry_model_dct = {}
 
-    for id in covid_train.GeoId.unique():
+    for ctry_id in covid_train.GeoId.unique():
         # Define initial parameter dictionary for each country
-        ctry_init_param_dct[id] = init_params.copy()
-        ctry_init_param_dct[id].update([('tInit', first_case_dates[id]),
-                                        ('beta0', country_population[id])])
+        ctry_init_param_dct[ctry_id] = init_params.copy()
+        ctry_init_param_dct[ctry_id].update([('tInit', first_case_dates[ctry_id]),
+                                        ('beta0', country_population[ctry_id])])
 
         # Initialize GP model for each country
-        ctry_model_dct[id] = \
-            COVID_GP_Model(init_param_dct=ctry_init_param_dct[id],
-                           train_dat_x=covid_train_arr[id][0, ],
-                           train_dat_y=covid_train_arr[id][1, ],
+        ctry_model_dct[ctry_id] = \
+            COVID_GP_Model(init_param_dct=ctry_init_param_dct[ctry_id],
+                           train_dat_x=covid_train_arr[ctry_id][0, ],
+                           train_dat_y=covid_train_arr[ctry_id][1, ],
                            kernel_func=ar_kernel,
                            mean_func=quad_mean_function,
-                           model_name=id)
+                           model_name=ctry_id)
 
     # Train those suckers!
     lrn_rate = 1e-2
     n_iter = 500
-    for id in covid_train.GeoId.unique():  # Train each per-country model
-        for _ in n_iter:  # Run n_iter iterations of gradient descent
+    for ctry_id in covid_train.GeoId.unique():  # Train each per-country model
+        for _ in range(n_iter):  # Run n_iter iterations of gradient descent
             # Update log-likelihood and backprop through
-            ctry_model_dct[id].update_log_likelihood()
-            ctry_model_dct[id].log_likelihood.backward()
+            ctry_model_dct[ctry_id].update_log_likelihood()
+            ctry_model_dct[ctry_id].log_likelihood.backward()
             # For each parameter, update using gradient obtained through backprop
-            for k in ctry_model_dct[id].parameters.keys():
-                ctry_model_dct[id].parameters[k] += lrn_rate * \
-                    ctry_model_dct[id].parameters[k].grad
+            for k in ctry_model_dct[ctry_id].parameters.keys():
+                ctry_model_dct[ctry_id].parameters[k] += lrn_rate * \
+                    ctry_model_dct[ctry_id].parameters[k].grad
