@@ -59,17 +59,19 @@ class COVID_GP_Model(object):
     def update_log_likelihood(self):
         # Compute Kernel Matrix, Inverse, etc.
         self.Kxx_train = self.compute_Kxy(self.train_dat_x,
-                                          self.train_dat_x)
+                                          self.train_dat_x).double()
 
         self.Kxx_train_inv = self.Kxx_train.inverse()
         self.mu_train = self.compute_mu(self.train_dat_x)
 
         # Initial Compute of Various Model Params and Likelihood
-        self.adj_train_dat_y = (self.train_dat_y - self.mu_train).unsqueeze(-1)
-        self.log_likelihood = -(0.5 / self.train_dat_len) * \
-            torch.chain_matmul(self.adj_train_dat_y.T,
-                               self.Kxx_train_inv,
-                               self.adj_train_dat_y)
+        self.adj_train_dat_y = (
+            self.train_dat_y - self.mu_train).double().unsqueeze(-1)
+
+        self.log_lik_loss = (torch.chain_matmul(self.adj_train_dat_y.T,
+                                                self.Kxx_train_inv,
+                                                self.adj_train_dat_y) +
+                             torch.logdet(self.Kxx_train)) / self.train_dat_len
 
     def predict(self, x_vec_new, compute_var_mat=False):
         # Compute Posterior Mean
@@ -89,7 +91,7 @@ class COVID_GP_Model(object):
     def __str__(self):
         return "Model Name: " + str(self.model_name) + "\n" + \
             "Current Params: " + str(self.parameters) + "\n" + \
-            "Current Loss:  " + str(self.log_likelihood)
+            "Current Loss:  " + str(self.log_lik_loss)
 
     def __repr__(self):
         return self.__str__()
@@ -119,6 +121,9 @@ if __name__ == '__main__':
                      'Cases', 'lnCasesNorm',
                      'CountryFirstCaseDate', 'CountryPop']])
 
+    # # REMOVE LATER
+    # covid_train = covid_train[covid_train.GeoId == 'US']
+
     # Generate dict of arrays for training
     covid_train_arr = [(covid_train
                         [covid_train.GeoId == c]
@@ -140,7 +145,7 @@ if __name__ == '__main__':
             param_dct['sigma1']*(x_1 == x_2)
 
     def ar_kernel(x_1, x_2, param_dct):
-        return param_dct['sigma1']*(x_1 == x_2)
+        return param_dct['sigma0']*(x_1 == x_2)
 
     def quad_mean_function(t_vec, param_dct):
         return (param_dct['beta0'] +
@@ -154,7 +159,7 @@ if __name__ == '__main__':
                    'tInit': 0.0, 'tDelta': 100.0,
                    'beta0': 0.0, 'beta1': 1.0}
 
-    init_params = {'sigma1': 1.0,
+    init_params = {'sigma0': 100.0,
                    'tInit': 0.0, 'tDelta': 100.0,
                    'beta0': 0.0, 'beta1': 0.001}
 
@@ -178,26 +183,26 @@ if __name__ == '__main__':
                            model_name=ctry_id)
 
     # Train those suckers!
-    lrn_rate = 1e-5
-    n_iter = 1000
+    lrn_rate = 1e-9
+    n_iter = 5000
+
+    print_interval = 250
 
     for ctry_id in covid_train.GeoId.unique():  # Train each per-country model
         for i in range(n_iter):  # Run n_iter iterations of gradient descent
             # Update log-likelihood and backprop through
             ctry_model_dct[ctry_id].update_log_likelihood()
-            ctry_model_dct[ctry_id].log_likelihood.backward()
+            ctry_model_dct[ctry_id].log_lik_loss.backward()
 
             # Print Train Status on Occasion
-            if not( (i+1) % 200):
+            if not((i+1) % print_interval):
                 print("\nIteration %i on Country %s" % (i+1, ctry_id))
                 print(ctry_id, "Log-Lik Value:",
-                      ctry_model_dct[ctry_id].log_likelihood)
+                      ctry_model_dct[ctry_id].log_lik_loss)
                 print(ctry_model_dct[ctry_id].parameters)
 
             # For each parameter, update using gradient obtained through backprop
             for k in ctry_model_dct[ctry_id].parameters.keys():
                 with torch.no_grad():
-                    ctry_model_dct[ctry_id].parameters[k] += lrn_rate * \
+                    ctry_model_dct[ctry_id].parameters[k] -= lrn_rate * \
                         ctry_model_dct[ctry_id].parameters[k].grad
-
-                ctry_model_dct[ctry_id].parameters[k].grad.zero_()
