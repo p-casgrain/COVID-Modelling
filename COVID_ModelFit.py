@@ -154,9 +154,9 @@ if __name__ == '__main__':
                    'tInit': 0.0, 'tDelta': 100.0,
                    'beta0': 0.0, 'beta1': 1.0}
 
-    init_params = {'sigma1': 10.0,
-                   'tInit': 0.0, 'tDelta': 10.0,
-                   'beta0': 0.0, 'beta1': 0.0}
+    init_params = {'sigma1': 1.0,
+                   'tInit': 0.0, 'tDelta': 100.0,
+                   'beta0': 0.0, 'beta1': 0.001}
 
     # Initialize Per-Country Models
     ctry_init_param_dct = {}
@@ -178,20 +178,26 @@ if __name__ == '__main__':
                            model_name=ctry_id)
 
     # Train those suckers!
-    lrn_rate = 1e-3
-    n_iter = 2
+    lrn_rate = 1e-5
+    n_iter = 1000
+
     for ctry_id in covid_train.GeoId.unique():  # Train each per-country model
         for i in range(n_iter):  # Run n_iter iterations of gradient descent
             # Update log-likelihood and backprop through
             ctry_model_dct[ctry_id].update_log_likelihood()
             ctry_model_dct[ctry_id].log_likelihood.backward()
-            print(ctry_id, i, ctry_model_dct[ctry_id].log_likelihood)
+
+            # Print Train Status on Occasion
+            if not( (i+1) % 200):
+                print("\nIteration %i on Country %s" % (i+1, ctry_id))
+                print(ctry_id, "Log-Lik Value:",
+                      ctry_model_dct[ctry_id].log_likelihood)
+                print(ctry_model_dct[ctry_id].parameters)
+
             # For each parameter, update using gradient obtained through backprop
             for k in ctry_model_dct[ctry_id].parameters.keys():
-                
-                print(ctry_id, k,
-                ctry_model_dct[ctry_id].parameters[k],
-                ctry_model_dct[ctry_id].parameters[k].grad)
+                with torch.no_grad():
+                    ctry_model_dct[ctry_id].parameters[k] += lrn_rate * \
+                        ctry_model_dct[ctry_id].parameters[k].grad
 
-                ctry_model_dct[ctry_id].parameters[k] = ctry_model_dct[ctry_id].parameters[k] + \
-                    lrn_rate * ctry_model_dct[ctry_id].parameters[k].grad
+                ctry_model_dct[ctry_id].parameters[k].grad.zero_()
