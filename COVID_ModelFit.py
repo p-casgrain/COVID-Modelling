@@ -3,16 +3,16 @@ import os
 import re
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from datetime import date, timedelta
 import datetime as dtm
-from collections import *
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Import DataGrab Functions
 from COVID_DataGrab import *
 
 # Import Model Fitting Functions
+from collections import *
 import torch
 
 # Define COVID Gaussian Process Model Class
@@ -27,10 +27,8 @@ class COVID_GP_Model(object):
         self.mean_func = mean_func
         self.model_name = model_name
 
-        # Store parameters and training data
-        self.parameters = init_param_dct.copy()
-
-        if not(train_dat_x.size()[0] - train_dat_y.size()[0]):
+        # Store training data
+        if (train_dat_x.shape[0] - train_dat_y.shape[0]):
             raise BaseException(
                 "Error: First dimension size of train_dat_x and train_dat_y must match.")
         else:
@@ -38,14 +36,21 @@ class COVID_GP_Model(object):
                                             requires_grad=False)
             self.train_dat_y = torch.tensor(train_dat_y,
                                             requires_grad=False)
-            self.train_dat_len = train_dat_x.size()[0]
+            self.train_dat_len = train_dat_x.shape[0]
+
+        # Store model parameters
+        self.parameters = {}
+        for ky in init_param_dct.keys():
+            self.parameters[ky] = torch.tensor(init_param_dct[ky],
+                                               requires_grad=True,
+                                               dtype=torch.float64)
 
         # Compute log_likelihood for the first time
         self.update_log_likelihood()
 
     def compute_Kxy(self, x_vec1, x_vec2):
-        return self.kernel_func(x_vec1.repeat(x_vec2.size()[0], 1).T,
-                                x_vec2.repeat(x_vec1.size()[0], 1),
+        return self.kernel_func(x_vec1.repeat(x_vec2.shape[0], 1).T,
+                                x_vec2.repeat(x_vec1.shape[0], 1),
                                 self.parameters)
 
     def compute_mu(self, x_vec):
@@ -56,12 +61,11 @@ class COVID_GP_Model(object):
         self.Kxx_train = self.compute_Kxy(self.train_dat_x,
                                           self.train_dat_x)
 
-        self.Kxx_train_inv = torch.inverse(self.Kxx_train)
-        self.mu_train = self.compute_mu(self.train_dat_x,
-                                        self.train_dat_x)
+        self.Kxx_train_inv = self.Kxx_train.inverse()
+        self.mu_train = self.compute_mu(self.train_dat_x)
 
         # Initial Compute of Various Model Params and Likelihood
-        self.adj_train_dat_y = self.train_dat_y - self.mu_train
+        self.adj_train_dat_y = (self.train_dat_y - self.mu_train).unsqueeze(-1)
         self.log_likelihood = -(0.5 / self.train_dat_len) * \
             torch.chain_matmul(self.adj_train_dat_y.T,
                                self.Kxx_train_inv,
@@ -130,20 +134,29 @@ if __name__ == '__main__':
     # Country Population
     country_population = covid_train.groupby('GeoId').first().CountryPop
 
-    # Define Initial Parameters
-    init_params = {'rho': 1e-3, 'sigma': 1e-3,
-                   'tInit': 0, 'tDelta': 100,
-                   'beta0': 0, 'beta1': 1}
-
     # Define Kernel and Mean Functions to Use
     def ar_kernel(x_1, x_2, param_dct):
-        return param_dct['sigma']*(param_dct['rho']**torch.abs(x_1-x_2))
+        return param_dct['sigma0']*(param_dct['rho']**torch.abs(x_1-x_2)) + \
+            param_dct['sigma1']*(x_1 == x_2)
+
+    def ar_kernel(x_1, x_2, param_dct):
+        return param_dct['sigma1']*(x_1 == x_2)
 
     def quad_mean_function(t_vec, param_dct):
         return (param_dct['beta0'] +
                 (param_dct['beta1'] *
                  (t_vec - param_dct['tInit']) *
                  (t_vec - (param_dct['tInit'] + param_dct['tDelta']))))
+
+    # Define Initial Parameters
+    init_params = {'rho': 0.0,
+                   'sigma0': 1.0, 'sigma1': 1.0,
+                   'tInit': 0.0, 'tDelta': 100.0,
+                   'beta0': 0.0, 'beta1': 1.0}
+
+    init_params = {'sigma1': 10.0,
+                   'tInit': 0.0, 'tDelta': 10.0,
+                   'beta0': 0.0, 'beta1': 0.0}
 
     # Initialize Per-Country Models
     ctry_init_param_dct = {}
@@ -153,7 +166,7 @@ if __name__ == '__main__':
         # Define initial parameter dictionary for each country
         ctry_init_param_dct[ctry_id] = init_params.copy()
         ctry_init_param_dct[ctry_id].update([('tInit', first_case_dates[ctry_id]),
-                                        ('beta0', country_population[ctry_id])])
+                                             ('beta0', -1*np.log(country_population[ctry_id]))])
 
         # Initialize GP model for each country
         ctry_model_dct[ctry_id] = \
@@ -165,14 +178,20 @@ if __name__ == '__main__':
                            model_name=ctry_id)
 
     # Train those suckers!
-    lrn_rate = 1e-2
-    n_iter = 500
+    lrn_rate = 1e-3
+    n_iter = 2
     for ctry_id in covid_train.GeoId.unique():  # Train each per-country model
-        for _ in range(n_iter):  # Run n_iter iterations of gradient descent
+        for i in range(n_iter):  # Run n_iter iterations of gradient descent
             # Update log-likelihood and backprop through
             ctry_model_dct[ctry_id].update_log_likelihood()
             ctry_model_dct[ctry_id].log_likelihood.backward()
+            print(ctry_id, i, ctry_model_dct[ctry_id].log_likelihood)
             # For each parameter, update using gradient obtained through backprop
             for k in ctry_model_dct[ctry_id].parameters.keys():
-                ctry_model_dct[ctry_id].parameters[k] += lrn_rate * \
-                    ctry_model_dct[ctry_id].parameters[k].grad
+                
+                print(ctry_id, k,
+                ctry_model_dct[ctry_id].parameters[k],
+                ctry_model_dct[ctry_id].parameters[k].grad)
+
+                ctry_model_dct[ctry_id].parameters[k] = ctry_model_dct[ctry_id].parameters[k] + \
+                    lrn_rate * ctry_model_dct[ctry_id].parameters[k].grad
