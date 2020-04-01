@@ -36,7 +36,22 @@ def covid_ecdc_data_download(covid_csv_root):
 
 def covid_ecdc_load_latest(covid_csv_root):
     # Import Data from Disk
-    latest_filename = list(filter(lambda s: re.match("COVID\-19\-\d", s),
+    latest_filename = list(filter(lambda s: re.match("^\d", s),
+                                  os.listdir(covid_csv_root)))
+    latest_filename.sort()
+    latest_filename = latest_filename[-1]
+
+    covid_tbl = pd.read_csv(
+        os.path.join(covid_csv_root, latest_filename),
+        squeeze=True,
+        parse_dates=False)
+
+    return covid_tbl
+
+
+def covid_enriched_load_latest(covid_csv_root):
+    # Import Data from Disk
+    latest_filename = list(filter(lambda s: re.match("^enriched-\d", s),
                                   os.listdir(covid_csv_root)))
     latest_filename.sort()
     latest_filename = latest_filename[-1]
@@ -53,9 +68,12 @@ def enrich_covid_dataframe(covid):
 
     # Rename Columns for Simplicity
     covid = covid.rename(
-        columns={'DateRep': 'DateStr',
-                 'Countries and territories': 'Country',
-                 'Pop_Data.2018': 'CountryPop'})
+        columns={'dateRep': 'DateStr',
+                 'countriesAndTerritories': 'Country',
+                 'deaths':'Deaths',
+                 'cases':'Cases',
+                 'geoId':'GeoId',
+                 'popData2018': 'CountryPop'})
 
     # Add Integer Date and Sort
     covid = (covid
