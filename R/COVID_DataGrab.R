@@ -99,6 +99,7 @@ covid.tbl <- fread(file.path)
     { glmnet(formula = model.fmla,
              data = covid.tbl.train[geoid==id],
              upper.limits	= c(Inf,Inf,0),
+             lower.limits = c(0,-Inf,-Inf),
              use.model.frame=T,
              lambda = 0) }
   
@@ -122,9 +123,8 @@ covid.tbl <- fread(file.path)
 
 # Fit Gaussian RVs to Each Coefficient
 coef.covmat <- model.coefs.tbl[,cbind(b0,b1,b2) %>% cov]
-coef.covmat.inv <- coef.covmat %>% inve
+# coef.covmat.inv <- coef.covmat %>% Inver
 coef.mean <- model.coefs.tbl[,.(b0,b1,b2) %>% sapply(mean)]
-
 
 
 get.quad.max <- ( function(cfs) -cfs["1"]/(2*cfs["2"]) ) %>% Vectorize
