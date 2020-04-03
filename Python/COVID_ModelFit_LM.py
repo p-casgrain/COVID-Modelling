@@ -21,22 +21,22 @@ def camelCase(st):
     output = ''.join(x for x in st.title() if x.isalnum())
     return output[0].lower() + output[1:]
 
-
 def negPart(x):
     return -1*torch.relu(-1*x)
-
 
 def posPart(x):
     return torch.relu(x)
 
-
-def torchCov(x):
+def torchOuterSum(x):
     return torch.matmul(x.T, x)/x.shape[0]
 
+def torchCov(x,mn):
+    mn = mn.squeeze().unsqueeze(0)
+    return torchOuterSum(x-mn)
 
 def projectBeta(beta):
-    beta[:, 0] = negPart(beta[:, 2])
-    beta[:, 1] = posPart(beta[:, 2])
+    # beta[:, 0] = negPart(beta[:, 0])
+    # beta[:, 1] = posPart(beta[:, 1])
     beta[:, 2] = negPart(beta[:, 2])
     return beta
 
@@ -58,19 +58,26 @@ def log_density_prior(beta, mean, precChol):
         + 0.5*torch.logdet(prec/2*np.pi)
 
 
-class bayesLR(object):
-    def __init__(self, x_train, y_train, initParamDct):
+class gaussBayesLM(object):
+    def __init__(self, x_train, y_train, initParamDct, re_normalize = False):
         # Assign training data and initialize parameters
         self.x_train = \
-            [torch.tensor(it, dtype=torch.float64, requires_grad=False)
+            [it.clone().detach().requires_grad_(False)
              for it in x_train]
         self.y_train = \
-            [torch.tensor(it, dtype=torch.float64, requires_grad=False)
+            [it.clone().detach().clone().detach().requires_grad_(False)
              for it in y_train]
         self.paramDct = \
-            {k: torch.tensor(v, dtype=torch.float64, requires_grad=True)
+            {k: v.clone().detach().clone().detach().requires_grad_(True)
              for k, v in initParamDct.items()}
         self.n_ctrys = len(self.y_train)
+
+        # Re-normalize features if approptiate
+        if re_normalize:
+            self.x_adj = [self.gen_x_adj(it) for it in self.x_train]
+            self.x_train = \
+                [torch.matmul(self.x_train[ix],
+                self.x_adj[ix]) for ix in range(self.n_ctrys)]
 
         # Compute Covariance Matrices
         self.ctryXX = \
@@ -85,44 +92,59 @@ class bayesLR(object):
         # Update likelihood for First time
         self.update_likelihood()
 
+    def gen_x_adj(self,x):
+        x_adj = torch.tensor( [ 1.0 if it==0 else 1/it for it in x.std(dim=0) ] )
+        return torch.diag(x_adj)
+
     def EM_step(self):
         # Run a single step of the EM algorithm
         with torch.no_grad():  # Ensure computations aren't tracked
-            paramDct0 = {k: v.clone() for (k, v) in self.paramDct.items()}
+            # Copy latest parameters
+            self.paramDct0 = {k: v.clone().detach() for (k, v) in self.paramDct.items()}
+
             # Update Parameters for Prior Distribution on Coefficients
-            self.paramDct['priorMean'] = \
-                self.paramDct0['ctryBetas'].mean(dim=0)
-            self.priorPrec = torchCov(self.paramDct0['ctryBetas']).pinverse()
-            self.paramDct['priorPrecChol'] = self.priorPrec.cholesky()
+            self.paramDct['priorMean'] =  self.paramDct0['ctryBetas'].mean(dim=0)
+
+            self.priorCov = \
+                torchOuterSum(self.paramDct0['ctryBetas'] \
+                    - self.paramDct0['priorMean'])
+
+            self.priorPrec = self.priorCov.inverse()
+            self.paramDct['priorPrecChol']= self.priorPrec.cholesky()
+
             # Update per-country parameters
             for ix in range(self.n_ctrys):
                 # Generate predictions, residuals and covariances
-                ctryPred = torch.mv(self.x_train[ix],
-                                    self.paramDct0['ctryBetas'][ix].double())
-                ctryResid = ctryPred - self.y_train[ix]
+                ctryPred=torch.mv(self.x_train[ix],
+                                     self.paramDct0['ctryBetas'][ix].double())
+                ctryResid=ctryPred - self.y_train[ix]
+
                 # Compute residual error precision
-                self.paramDct['errorPrec'] = 1.0/ctryResid.var()
+                self.paramDct['errorPrec'][ix]=1.0/ctryResid.var()
+
                 # Compute per-country betas
-                betaXY_tmp = (self.ctryXY[ix] * paramDct0['errorPrec']) + \
-                    torch.mv(self.priorPrec, self.paramDct0['priorMean'])
-                betaXX_tmp = self.ctryXX[ix] * paramDct0['errorPrec'] + \
-                    self.priorPrec
-                self.paramDct['ctryBetas'] = \
-                    torch.solve(betaXY_tmp,
-                                betaXX_tmp).solution.squeeze()
+                self.betaXY_tmp=\
+                    (self.ctryXY[ix] *  self.paramDct0['errorPrec'][ix]).T \
+                        + torch.mv(self.priorPrec,  self.paramDct0['priorMean'])
+                self.betaXX_tmp=\
+                    self.ctryXX[ix] *  self.paramDct0['errorPrec'][ix] \
+                        + self.priorPrec
+                self.paramDct['ctryBetas'][ix]=\
+                    torch.solve(self.betaXY_tmp.T,self.betaXX_tmp)\
+                        .solution.squeeze()
 
     def update_likelihood(self):
-        self.log_likelihood = 0
-        for ix in range(len(train_geoid_lst)):
+        self.log_likelihood= 0
+        for ix in range(self.n_ctrys):
             self.log_likelihood += \
                 self.log_density_country(self.x_train[ix],
                                          self.y_train[ix],
                                          self.paramDct['ctryBetas'][ix],
-                                         self.paramDct['errorPrec'][ix])
+                                         self.paramDct['errorPrec'][ix]).squeeze()
             self.log_likelihood += \
                 self.log_density_prior(self.paramDct['ctryBetas'][ix],
                                        self.paramDct['priorMean'],
-                                       self.paramDct['priorPrecChol'])
+                                       self.paramDct['priorPrecChol']).squeeze()
 
     def log_density_country(self, x, y, beta, rho):
         # Compute log density of data for an individual country
@@ -139,7 +161,7 @@ class bayesLR(object):
         beta_adj = (beta - mean).unsqueeze(-1)
         norm_const = 2*np.pi
         return - 0.5*(torch.chain_matmul(beta_adj.T, prec, beta_adj)
-                      - torch.logdet(prec/2*np.pi)))
+                      - torch.logdet(prec/2*np.pi))
 
 
 class expDecayLrnRate(object):
@@ -171,7 +193,8 @@ if __name__ == '__main__':
     def train_subset(x): return (x.cases > 0) & (x.totCases > 1000) &\
         (x.nNonzeroRows > 20) & (x.maxGap < 4) &\
         (x.geoid != "RU")
-    covid_train=covid[train_subset(covid)]
+
+    covid_train=covid[covid.isTrain==True]
 
     # Generate Arrays of Training Data
     def genFeatures(x):
@@ -192,95 +215,70 @@ if __name__ == '__main__':
     y_train=[covid_train[covid_train.geoid == id].pipe(
         genResp) for id in train_geoid_lst]
 
-    # Initialize Beta Parameters
-    ctryBetas=torch.randn((n_geoid, 3),
-                    dtype=torch.float64, requires_grad=True)
+    # Initialize Model Parameters
+    ctryBetas=torch.randn((n_geoid, 3),dtype=torch.float64)
 
-    with torch.no_grad():
-        for i in range(n_geoid):
-            ctryBetas[i, ] = \
-                torch.solve(torch.matmul(x_train[i].T, y_train[i]).unsqueeze(-1),
-                            torch.matmul(x_train[i].T, x_train[i])).solution.squeeze()
-        priorMean = ctryBetas.mean(0)
+    for i in range(n_geoid):
+        ctryBetas[i, ] = \
+            torch.solve(torch.matmul(x_train[i].T, y_train[i]).unsqueeze(-1),
+                        torch.matmul(x_train[i].T, x_train[i])).solution.squeeze()
+    
+    priorMean = ctryBetas.mean(0)
 
-    priorMean.requires_grad_(True)
+    errorPrec = torch.ones((n_geoid, 1),dtype=torch.float64)
 
-    # Initialize Precision Parameters
-    errorPrec = \
-        torch.ones((n_geoid, 1),
-                   dtype=torch.float64, requires_grad=True)
+    priorPrecChol = torch.eye(3, dtype=torch.float64)
 
-    priorPrecChol = torch.eye(3, dtype=torch.float64, requires_grad=True)
+    paramDctInit = {'ctryBetas':ctryBetas,
+                    'priorMean':priorMean,
+                    'errorPrec':errorPrec,
+                    'priorPrecChol':priorPrecChol}
+
+    # Initialize Model Object, then delete parameters
+    ctryLM = gaussBayesLM(x_train, y_train, paramDctInit,re_normalize=False)
 
     # Set learning rate params
-    lrn_rate = expDecayLrnRate(l0=1e-10, lMin=1e-10, lDecay=1-1e-5)
+    lrn_rate = expDecayLrnRate(l0=25e-7, lMin=8e-8, lDecay=1-2e-4)
 
     # Train the parameters
-    n_iter = 5
-    print_interval = 300
+    n_iter = 50000
+    print_interval = 250
 
     for it_num in range(n_iter):
-        # Compute Likelihood
-        log_lik = 0
-        for ix in range(len(train_geoid_lst)):
-            log_lik += \
-                log_density_country(x_train[ix], y_train[ix],
-                                    ctryBetas[ix], errorPrec[ix]) \
-                + log_density_prior(ctryBetas[ix], priorMean, priorPrecChol)
+        # Update Likelihood
+        ctryLM.update_likelihood()
 
-        # Print progress
-        if not it_num % print_interval:
-            print(it_num, "Loss: %f" % log_lik.detach())
-
-        # Compute Gradient and take step
-        log_lik.backward()
-        with torch.no_grad():
-            # Compute Gradients
-            ctryBetas += lrn_rate * ctryBetas.grad
-            ctryBetas = projectBeta(ctryBetas)
-
-            priorMean += lrn_rate * priorMean.grad
-            priorMean.data = projectBeta(priorMean.unsqueeze(0)).squeeze().data
-
-            priorPrecChol += lrn_rate * priorPrecChol.grad
-
-            errorPrec += lrn_rate * errorPrec.grad
-            errorPrec.data = torch.abs(errorPrec.data).data
-
+        # Update Learning Rate
         lrn_rate.next()
 
-        for it_num in range(n_iter):
-            # Compute Likelihood
-        log_lik = 0
-        for ix in range(len(train_geoid_lst)):
-            log_lik += \
-                log_density_country(x_train[ix], y_train[ix],
-                                    ctryBetas[ix], errorPrec[ix]) \
-                + log_density_prior(ctryBetas[ix], priorMean, priorPrecChol)
-
-        # Print progress
-        if not it_num % print_interval:
-            print(it_num, "Loss: %f" % log_lik.detach())
+        # Take EM step
+        # ctryLM.EM_step()
 
         # Compute Gradient and take step
-        log_lik.backward()
+        ctryLM.log_likelihood.backward()
+
         with torch.no_grad():
             # Compute Gradients
-            ctryBetas += lrn_rate * ctryBetas.grad
-            ctryBetas = projectBeta(ctryBetas)
+            ctryLM.paramDct = \
+                {k: (v + lrn_rate*v.grad).requires_grad_(True) \
+                    for k,v in ctryLM.paramDct.items()}
+            
+            ctryLM.paramDct['ctryBetas'].data = \
+                projectBeta(ctryLM.paramDct['ctryBetas'].data)
+                
+            ctryLM.paramDct['priorMean'].data = \
+                projectBeta(ctryLM.paramDct['priorMean']
+                            .data.unsqueeze(0)).squeeze()
+            
+            ctryLM.paramDct['errorPrec'].data = \
+                torch.abs(ctryLM.paramDct['errorPrec'].data)
 
-            priorMean += lrn_rate * priorMean.grad
-            priorMean.data = projectBeta(priorMean.unsqueeze(0)).squeeze().data
+        # Print progress
+        if not (it_num+1) % print_interval:
+            print(it_num+1, 
+            "Loss: %f" % ctryLM.log_likelihood, 
+            "Log10LrnRt: %f" % np.log10(lrn_rate.l) )
 
-            priorPrecChol += lrn_rate * priorPrecChol.grad
-
-            errorPrec += lrn_rate * errorPrec.grad
-            errorPrec.data = torch.abs(errorPrec.data).data
-
-        lrn_rate.next()
-
-    for it_num in range(n_iter):
-        pred =
 
     # Save Latest Params to Disk
     param_fname = "covid_lm_params_" \
@@ -293,10 +291,7 @@ if __name__ == '__main__':
     param_write_path = os.path.join(param_dir, param_fname)
 
     with open(param_write_path, "wb") as handle:
-        pickle.dump({'ctryBetas': ctryBetas,
-                     'errorPrec': errorPrec,
-                     'priorMean': priorMean,
-                     'priorPrecChol': priorPrecChol},
+        pickle.dump(ctryLM.paramDct,
                     handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     # Generate Model Predictions

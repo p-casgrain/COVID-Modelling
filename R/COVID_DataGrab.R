@@ -5,10 +5,12 @@ library(foreach)
 library(data.table)
 library(ggplot2)
 
-library(matlib)
+# library(matlib)
 library(glmnet)
 library(glmnetUtils)
 library(mvtnorm)
+library(scales)
+
 
 
 # Define utility functions
@@ -71,76 +73,41 @@ covid.tbl <- fread(file.path)
   
   covid.tbl[cases>0, delta.next.non0 := c( diff(date.int), 1 ), by=geoid]
   covid.tbl[cases>0, max.gap := delta.next.non0 %>% rev %>% cummax %>% rev, by=geoid]
-  
-  fwrite(covid.tbl,file.path(download.dir,str_glue("enriched-{today.str}.csv")))
 }
 
 # Generate Training Data Set
 {
-  covid.tbl.train <- covid.tbl[(cases>0)&(!is.na(cases))&
-                                 (tot.cases>1000)&(n.nonzero.rows>20)&
-                                 (max.gap<4)&(geoid %!in% c("RU"))]
+  covid.tbl[,is.train := (cases>0)&(!is.na(cases))&
+                         (tot.cases>1000)&(n.nonzero.rows>20)&(max.gap<4)]
   
-  covid.tbl.train[, log.cases := log(cases) ]
+  covid.tbl[(geoid=="RU"),is.train:=F]
+  covid.tbl[(geoid=="KR")&(date>ymd(20200314)),is.train:=F]
+  covid.tbl[(geoid=="CN")&(date>ymd(20200316)),is.train:=F]
+  covid.tbl[(geoid=="US")&(date<ymd(20200301)),is.train:=F]
+  covid.tbl[(geoid=="EC")&(date<ymd(20200310)),is.train:=F]
+  covid.tbl[(geoid=="PK")&(date<ymd(20200305)),is.train:=F]
   
-  train.ctrys <- covid.tbl.train[,geoid %>% unique]
+  train.ctrys <- covid.tbl.train[(is.train),geoid %>% unique]
+  
+  fwrite(covid.tbl,file.path(download.dir,str_glue("enriched-{today.str}.csv")))
   
 }
 
-
-# Fit Linear Models
 {
-  # Define Formula
-  model.fmla <- log.cases ~ 1 + I(date.int-ctry.min.date.int) + I((date.int-ctry.min.date.int)^2)
+  ggplot(covid.tbl[is.train==T]) +
+    geom_point(aes(x=date,y=log(cases))) +
+    geom_smooth(aes(x=date,y=log(cases)), se=F, color="red") +
+    facet_wrap(~geoid) +
+    scale_x_date(date_breaks = "5 days") +
+    theme(axis.text.x = element_text(angle = 90))
   
-  # Fit Constrained Model per Country
-  model.lst <- 
-    foreach(id=train.ctrys) %do%
-    { glmnet(formula = model.fmla,
-             data = covid.tbl.train[geoid==id],
-             upper.limits	= c(Inf,Inf,0),
-             lower.limits = c(0,-Inf,-Inf),
-             use.model.frame=T,
-             lambda = 0) }
+    
+  ggplot(covid.tbl[is.train==T][geoid %in% c("CN","KR","JP","US","CA","IR")]) +
+    geom_point(aes(x=date,y=log(cases))) +
+    geom_point(aes(x=date,y=log(cases))) +
+    facet_wrap(~geoid) +
+    scale_x_date(date_breaks = "5 days") +
+    theme(axis.text.x = element_text(angle = 90))
   
-  model.lst %<>% rename(train.ctrys)
-  
-  # Generate Model Predictions
-  covid.tbl.train[, pred.log.cases := predict( model.lst[[first(geoid)]], .SD ),
-                  by = geoid]
-  
-  # Store Coefficients
-  model.coefs.tbl <- model.lst %>% sapply(function(x) x %>% coef %>% as.matrix ) %>% t %>% data.table(keep.rownames = T)
-  setnames(model.coefs.tbl,colnames(model.coefs.tbl),c("geoid","b0","b1","b2"))
-  
-  # Plot results
-  ggplot(covid.tbl.train) + 
-    geom_point(aes(x=date,y=cases %>% log )) +
-    geom_line(aes(x=date,y=pred.log.cases), colour='red') +
-    facet_wrap(~country,scales="free")
 }
-
-
-# Fit Gaussian RVs to Each Coefficient
-coef.covmat <- model.coefs.tbl[,cbind(b0,b1,b2) %>% cov]
-# coef.covmat.inv <- coef.covmat %>% Inver
-coef.mean <- model.coefs.tbl[,.(b0,b1,b2) %>% sapply(mean)]
-
-
-get.quad.max <- ( function(cfs) -cfs["1"]/(2*cfs["2"]) ) %>% Vectorize
-get.quad.roots <- ( function(cfs) ( -cfs["1"] + c(-1,1)*sqrt(cfs["1"]^2 - 4*cfs["0"]*cfs["2"]) )/(2*cfs["2"]) ) %>% Vectorize
-get.quad.root.gap <- ( function(cfs) ( sqrt(cfs["1"]^2 - 4*cfs["0"]*cfs["2"]) )/cfs["2"] ) %>% Vectorize
-
-
-model.coefs %>% get.quad.max
-model.coefs %>% get.quad.roots
-model.coefs %>% get.quad.root.gap
-
-
-
-
-
-ggplot(covid.tbl[geoid=="CN"]) +
-  geom_point(aes(x=date,y=cases,colour=geoid))
-
 
