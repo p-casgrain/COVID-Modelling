@@ -87,7 +87,7 @@ covid.tbl <- fread(file.path)
   covid.tbl[(geoid=="EC")&(date<ymd(20200310)),is.train:=F]
   covid.tbl[(geoid=="PK")&(date<ymd(20200305)),is.train:=F]
   
-  train.ctrys <- covid.tbl.train[(is.train),geoid %>% unique]
+  train.ctrys <- covid.tbl[(is.train),geoid %>% unique]
   
   fwrite(covid.tbl,file.path(download.dir,str_glue("enriched-{today.str}.csv")))
   
