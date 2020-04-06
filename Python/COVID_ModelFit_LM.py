@@ -39,23 +39,31 @@ def projectHalfSpace(x, sides=None, lower=None):
 def sgnRelu(x, s):
     return s*torch.relu(x*s)
 
-# Define Log-Density Functions
+
+def gen_initParamDct(x_train, y_train, n_geoid):
+    ctryBetas=torch.randn((n_geoid, 3),dtype=torch.float64)
+
+    for i in range(n_geoid):
+        ctryBetas[i, ] = \
+            torch.solve(torch.matmul(x_train[i].T, y_train[i]).unsqueeze(-1),
+                        torch.matmul(x_train[i].T, x_train[i])).solution.squeeze()
+
+    priorMean = ctryBetas.mean(0)
+
+    errorPrec = torch.ones((n_geoid, 1),dtype=torch.float64)
+
+    priorPrecChol = torch.eye(3, dtype=torch.float64)
+
+    paramDctInit = {'ctryBetas':ctryBetas,
+                    'priorMean':priorMean,
+                    'errorPrec':errorPrec,
+                    'priorPrecChol':priorPrecChol}
+    
+    return paramDctInit
 
 
-def log_density_country(x, y, beta, rho):
-    n = len(y)
-    prec = rho**2
-    norm_const = torch.tensor(2*np.pi, requires_grad=False)
-    return - 0.5*torch.norm(torch.mv(x, beta.double()) - y)*prec \
-        + 0.5*n*torch.log(prec) - 0.5*n*torch.log(norm_const)
 
-
-def log_density_prior(beta, mean, precChol):
-    prec = torch.matmul(precChol.T, precChol)
-    beta_adj = (beta - mean).unsqueeze(-1)
-    return - 0.5*torch.chain_matmul(beta_adj.T, prec, beta_adj) \
-        + 0.5*torch.logdet(prec/2*np.pi)
-
+# Define model and training rate classes
 
 class gaussBayesLM(object):
     def __init__(self, x_train, y_train, initParamDct, re_normalize=False):
@@ -176,7 +184,9 @@ class gaussBayesLM(object):
         self.update_posterior_distributions()
         return [d.sample((n,)) for d in self.post_distributions]
 
-    def predict(self, x_new, beta_lst=self.sample_posterior(5000)):
+    def predict(self, x_new, beta_lst=None):
+        if beta_lst==None:
+            beta_lst = self.sample_posterior(5000)
         # Renormalize features if necessary
         if self.x_normalized:
             x_new = \
@@ -200,6 +210,32 @@ class expDecayLrnRate(object):
     def __mul__(self, other):
         return(self.l*other)
 
+class lipsEstimLrnRate(object):
+    def __init__(self, l0, l_min,  estimStopIter = int(1e3)):
+        self.n = 0
+        self.l = l0
+        self.l_min = l_min
+        self.estimStopIter = estimStopIter
+        self.x_last = None
+        self.g_last = None
+
+    def next(self,x,g):
+        # Step forward integer clock
+        self.n += 1
+        # Try to estimate inverse lipschitz constant
+        if (self.n < self.estimStopIter):
+            if not ( (self.x_last == None) | (self.g_last == None) ):
+                self.l = \
+                    min( self.l, \
+                    (x-self.x_last).norm().item() / (g-self.g_last).norm().item() )
+            self.l = max(self.l,self.l_min)
+            self.x_last = x
+            self.g_last = g
+            return self.l
+
+    def __mul__(self, other):
+        return(self.l*other)
+
 
 if __name__ == '__main__':
 
@@ -211,11 +247,9 @@ if __name__ == '__main__':
     covid = covid_enriched_load_latest(covid_csv_root)
     covid = covid.rename(dict([(x, camelCase(x))
                                for x in covid.columns]), axis='columns')
-
-    # Subset to Training Data
-    def train_subset(x): return (x.cases > 0) & (x.totCases > 1000) &\
-        (x.nNonzeroRows > 20) & (x.maxGap < 4) &\
-        (x.geoid != "RU")
+    covid['date'] = pd.to_datetime(covid.date,format="%Y-%m-%d")
+    
+    covid = covid.sort_values(by=['geoid', 'dateInt'])
 
     covid_train = covid[covid.isTrain == True]
 
@@ -239,56 +273,39 @@ if __name__ == '__main__':
     y_train = [covid_train[covid_train.geoid == id].pipe(
         genResp) for id in train_geoid_lst]
 
-    # Initialize Model Parameters
-    # ctryBetas=torch.randn((n_geoid, 3),dtype=torch.float64)
-
-    # for i in range(n_geoid):
-    #     ctryBetas[i, ] = \
-    #         torch.solve(torch.matmul(x_train[i].T, y_train[i]).unsqueeze(-1),
-    #                     torch.matmul(x_train[i].T, x_train[i])).solution.squeeze()
-
-    # priorMean = ctryBetas.mean(0)
-
-    # errorPrec = torch.ones((n_geoid, 1),dtype=torch.float64)
-
-    # priorPrecChol = torch.eye(3, dtype=torch.float64)
-
-    # paramDctInit = {'ctryBetas':ctryBetas,
-    #                 'priorMean':priorMean,
-    #                 'errorPrec':errorPrec,
-    #                 'priorPrecChol':priorPrecChol}
-
-    param_read_path = "/Users/philippe/Documents/GitHub/COVID-Experiments/ParamPickles/covid_lm_params_20200404_2104.pickle"
+    # Initialize Model Parameters from Disk
+    param_read_path = "/Users/philippe/Documents/GitHub/COVID-Experiments/ParamPickles/covid_lm_params_20200405_2007.pickle"
     with open(param_read_path, "rb") as h:
         paramDctInit = pickle.load(h)
 
     # Initialize Model Object, then delete parameters
     ctryLM = gaussBayesLM(x_train, y_train, paramDctInit, re_normalize=False)
 
-    # Set learning rate params
-    lrn_rate = expDecayLrnRate(l0=1e-8, lMin=5e-10, lDecay=1-1e-4)
+    # Initiailze learning rates
+    lrn_rate_dct = \
+        {k: lipsEstimLrnRate(1e-4,1e-9,estimStopIter=1000) \
+            for k in ctryLM.paramDct.keys()}
 
-    # Train the parameters
-    n_iter = int(5)
+    ## === Train the Model ===
+    n_iter = int(5e4)
     print_interval = 250
 
     for it_num in range(n_iter):
         # Update Likelihood
         ctryLM.update_likelihood()
 
-        # Update Learning Rate
-        lrn_rate.next()
-
-        # Take EM step
-        # ctryLM.EM_step()
-
         # Compute Gradient and take step
         ctryLM.log_likelihood.backward()
 
         with torch.no_grad():
+            # Update Learning Rates
+            for k,v in lrn_rate_dct.items():
+                v.next(ctryLM.paramDct[k],
+                       ctryLM.paramDct[k].grad)
+
             # Compute Gradients
             ctryLM.paramDct = \
-                {k: (v + lrn_rate*v.grad).requires_grad_(True)
+                {k: (v + lrn_rate_dct[k].l*v.grad).requires_grad_(True)
                     for k, v in ctryLM.paramDct.items()}
 
             ctryLM.paramDct['ctryBetas'].data[:, 2] = \
@@ -304,11 +321,11 @@ if __name__ == '__main__':
         if not (it_num+1) % print_interval:
             print(it_num+1,
                   "Loss: %f" % ctryLM.log_likelihood,
-                  "Log10LrnRt: %f" % np.log10(lrn_rate.l))
+                  "Log10LrnRt: %s" % {k: np.log10(v.l) for k,v in lrn_rate_dct.items() })
 
     # Save Latest Params to Disk
     param_fname = "covid_lm_params_" \
-        + dtm.datetime.now().strftime("%Y%m%d_%H%m")\
+        + dtm.datetime.now().strftime("%Y%m%d_%H%M")\
         + ".pickle"
 
     param_dir = os.path.expanduser(
@@ -323,14 +340,20 @@ if __name__ == '__main__':
     print("Params written to %s." % param_write_path)
 
 
-    ## === Generate Various Model Predictions ===
+    ## === Generate Model Predictions ===
 
     # Use rejection sampling to obtain posterior beta samples
-    n_samples = int(2e5)
+    def accept_quad(x):
+        # Return True if curvature negative and real roots exist
+        c1 = x[:, 1].pow(2) - (4*x[:, 0]*x[:, 2])
+        return (x[:, 2] < 0) & (c1 > 0)
+
+    n_samples = int(5e5)
     post_beta_samples = ctryLM.sample_posterior(n_samples)
-    post_beta_samples = [el[el[:, 2] < 0, :] for el in post_beta_samples]
+    post_beta_samples = [el[accept_quad(el), ] for el in post_beta_samples]
 
     # Compute posterior means
+
     post_mean_betas = \
         [item.mean(0) for item in post_beta_samples]
     post_mean_betas = dict(zip(train_geoid_lst, post_mean_betas))
@@ -339,8 +362,10 @@ if __name__ == '__main__':
     def cpt_peak_time(x):
         return (x[:, 1]/(-2*x[:, 2]))
 
-    peakTimes = [cpt_peak_time(el).mean() for el in post_beta_samples]
-    peakTimes = dict(zip(train_geoid_lst, peakTimes))
+    peak_times = [cpt_peak_time(el).mean().numpy() for el in post_beta_samples]
+    peak_times = dict(zip(train_geoid_lst, peak_times))
+
+    peak_times_mean = {k:v.mean() for k,v in peak_times.items()}
 
     # Get mean polynomial roots    
     def cpt_quad_roots(x):
@@ -349,8 +374,22 @@ if __name__ == '__main__':
         c2 = 2*x[:,2]
         return torch.stack([(c0 - c1)/c2, (c0 + c1)/c2], dim=1)
 
-    quad_roots = [ cpt_quad_roots(el) for el in post_beta_samples]
+    quad_roots = [ cpt_quad_roots(el).sort().values for el in post_beta_samples]
     quad_roots = dict(zip(train_geoid_lst, quad_roots))
+
+    quad_roots_mean = {k: v.mean(0).numpy() for k,v in quad_roots.items()}
+
+    def convert_tau_to_date(tau,ctry_geoid,tbl):
+        initDate = \
+            (tbl
+             [tbl.geoid == ctry_geoid]
+             [tbl.ctryMinDateInt == tbl.dateInt]
+             .date.iloc[0].date())
+        if type(tau) == "list":
+            return [initDate + dtm.timedelta(days=t) for t in tau]
+        else:
+            return initDate + dtm.timedelta(days=tau)
+
 
 
 
