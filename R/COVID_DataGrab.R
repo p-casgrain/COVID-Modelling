@@ -127,3 +127,43 @@ generate.covid.data <- function(covid.csv.dir = getwd() ){
   }
 
 
+
+
+
+#' Load Latest Simulation of Posterior Coefficients
+#'
+#' @param covid.train enriched covid data table
+#' @param param.dir directory pointing to Posterior Simulations
+#'
+#' @return beta.tbl (data table of simulations)
+#'
+load.latest.beta.sims <- 
+  function(covid.train,param.dir="~/Documents/GitHub/COVID-Experiments/Post_Sims/") {
+    # Load latest posterior simulations file from disk
+    latest.file <- list.files(param.dir) %>% sort %>% last
+    beta.tbl <- file.path(param.dir,latest.file) %>% fread
+    
+    # Generate peak data and roots
+    beta.tbl[,`:=`( peak.int = -b1/(2*b2),
+                    V1=NULL )]
+    
+    beta.tbl[,`:=`( root1.int =  peak.int - (0.5/b2)*sqrt( (b1^2) - 4*b0*b2),
+                    root2.int =  peak.int + (0.5/b2)*sqrt(b1^2 - 4*b0*b2) )]
+    
+    beta.tbl[,`:=`( maxroot.int = pmax(root1.int,root2.int) )]
+    
+    # Re-format dates to recover original format
+    beta.tbl <- 
+      beta.tbl %>%
+      merge(covid.train[,.( ctry.min.date.int = ctry.min.date.int %>% first, 
+                            country = country %>% first),by=geoid],
+            by="geoid",
+            all.x=T)
+    
+    beta.tbl[, c("peak.int","root1.int","root2.int","maxroot.int") := .SD + ctry.min.date.int, 
+             .SDcols = c("peak.int","root1.int","root2.int","maxroot.int")]
+    beta.tbl[, c("peak.date","root1.date","root2.date","maxroot.date") := .SD %>% lapply(as_date), 
+             .SDcols = c("peak.int","root1.int","root2.int","maxroot.int")]
+    
+    return(beta.tbl)
+  }
