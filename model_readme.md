@@ -22,7 +22,7 @@ Let the set of indices $j\in\mathfrak{N}$ represent individual countries and $i\
 Our model can be summarised as 
 $$
 y_{i,j} = 
-\langle x_{i,j} \, \beta_j \rangle + 
+\langle x_{i,j} \,,\, \beta_j \rangle + 
 \sigma_j \,\epsilon_{i,j} 
 \;,\;\; 
 \epsilon_{i,j} \sim \text{i.i.d. } \mathcal{N}(0,1)
