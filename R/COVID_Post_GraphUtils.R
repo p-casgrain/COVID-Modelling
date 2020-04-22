@@ -36,16 +36,23 @@ gen.density.plots <-
     ),
     by = .(geoid, variable)]
     
+    label.lst <- list(peak="Peak New Cases per Day",maxroot="Last New Case")
+    for (nm in names(label.lst)) {
+      plt.dt[variable==nm, varName := label.lst[nm] ]
+    }
+    
     ggplot(plt.dt) +
       geom_density(aes(x=value.date, group=interaction(variable,geoid)), 
-                   fill="purple", alpha=0.5, colour = 'black', size = 0.25 ) +
-      geom_vline(aes(colour="Mean", xintercept=value.date.mean ), size=1) +
-      geom_vline(aes(colour="Median", xintercept=value.date.median ),  size=1) +
-      geom_vline(aes(colour="Mode", xintercept=value.date.mode ),  size=1) +
+                   fill="purple", alpha=0.4, colour = 'black', size = 0.25 ) +
+      geom_vline(aes(colour="Mean", xintercept=value.date.mean ), size=0.75) +
+      geom_vline(aes(colour="Median", xintercept=value.date.median ),  size=0.75) +
+      geom_vline(aes(colour="Mode", xintercept=value.date.mode ),  size=0.75) +
       ggtitle("Peak Date and End Date - Probability Densities") +
       theme(axis.text.x = element_text(angle = 90)) +
-      facet_grid(variable~geoid, scales="free_y") +
-      scale_x_date(date_breaks = "15 days")
+      facet_grid(varName~geoid, scales="free_y") +
+      # xlab("Date") +
+      scale_x_date(name="Date", date_breaks = "15 days") +
+      scale_y_continuous(name = "Empirical Density")
   }
 
 
