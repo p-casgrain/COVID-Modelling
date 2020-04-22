@@ -125,3 +125,6 @@ dmypy.json
 .pyre/
 .vscode/settings.json
 Post_Sims/*.csv
+
+# Ignore Vscode
+.vscode/*
