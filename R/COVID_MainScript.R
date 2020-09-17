@@ -23,7 +23,7 @@ main <- function() {
   py.script.path <- file.path(PROJECT_PY_DIR,"COVID_ModelFit_LM.py")
   py_run_string("import os; os.chdir( os.path.expanduser('{PROJECT_ROOT}') )" %>% str_glue)
   py_run_string("print( 'Current python working directory is %s' % os.getcwd() )")
-  py_run_string("n_iter = int(5e4); print_interval = int(1e3);")
+  py_run_string("n_iter = int(1e4); print_interval = int(5e3); n_samples = int(3e4);")
   source_python(py.script.path, envir = parent.frame(), convert = FALSE)
 
   # == Load Posterior Simulations Data
@@ -34,7 +34,7 @@ main <- function() {
   # == Generate density and posterior prediction plots
   
   # Set countries to plot
-  geoid.lst <- c("CA","US")
+  geoid.lst <- c("CA","US","CH","IT")
   
   # Generate Plots
   gen.density.plots( beta.tbl[geoid %in% geoid.lst])
@@ -43,6 +43,6 @@ main <- function() {
   gen.posterior.preds( beta.tbl[geoid %in% geoid.lst], 
                        covid.train[geoid %in% geoid.lst] )
   
-  # gen.train.data.graph(covid.train[geoid %in% geoid.lst])
-  
+
 }
+

@@ -31,7 +31,7 @@ y_{i,j} =
 $$
 where $\sigma_j>0$, $\mu \in \mathbb{R}^3$ and $\Sigma\in\mathbb{R}^{3\times 3}$ is positive-definite and $\Omega\subseteq\mathbb{R}^3$ is convex. We define the distribution of $\mathcal{N}_{\Omega}$ to be a Gaussian random variable truncated to the set $\Omega$.
 
-## Estimating Model Parameters
+<!--## Estimating Model Parameters
 
-## Prediction 
+## Prediction -->
 
